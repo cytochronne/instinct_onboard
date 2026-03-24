@@ -54,6 +54,8 @@ class RealNode(Node):
         joint_pos_protect_ratio: float = 1.5,  # if the joint_pos is out of the range of this ratio, the process will shutdown.
         kp_factor: float = 1.0,  # the factor to multiply the p_gain and clip the value to be in [0, 500]
         kd_factor: float = 1.0,  # the factor to multiply the d_gain
+        kp_clip: float = 500, # the maximum limit to the kp factor to prevent rediculious behavior.
+        kd_clip: float = 20, # the maximum limit to the kd factor to prevent rediculious behavior.
         torque_limits_ratio: float = 1.0,  # the factor to multiply the torque limits
         robot_class_name: str = None,  # the robot class name, used to get the robot configuration
         dryrun: bool = True,  # if True, the robot will not send commands to the real robot
@@ -68,6 +70,8 @@ class RealNode(Node):
         self.joint_pos_protect_ratio = joint_pos_protect_ratio
         self.kp_factor = kp_factor
         self.kd_factor = kd_factor
+        self.kp_clip = kp_clip
+        self.kd_clip = kd_clip
         self.torque_limits_ratio = torque_limits_ratio
         self.robot_class_name = robot_class_name
         self.dryrun = dryrun
@@ -208,8 +212,8 @@ class RealNode(Node):
         self.action_publisher.publish(Float32MultiArray(data=action))
         action_scaled = action * action_scale
         target_joint_pos = action_scaled + action_offset
-        p_gains = np.clip(p_gains * self.kp_factor, 0.0, 500.0)
-        d_gains = np.clip(d_gains * self.kd_factor, 0.0, 5.0)
+        p_gains = np.clip(p_gains * self.kp_factor, 0.0, self.kp_clip)
+        d_gains = np.clip(d_gains * self.kd_factor, 0.0, self.kd_clip)
         if np.isnan(action).any():
             self.get_logger().error("Actions contain NaN, Skip sending the action to the robot.")
             return
