@@ -105,6 +105,7 @@ class OnboardAgent(ABC):
         for obs_name, obs_config in self.cfg["observations"]["policy"].items():
             if (
                 obs_name == "concatenate_terms"
+                or obs_name == "concatenate_dim"
                 or obs_name == "enable_corruption"
                 or obs_name == "history_length"
                 or obs_name == "flatten_history_dim"
