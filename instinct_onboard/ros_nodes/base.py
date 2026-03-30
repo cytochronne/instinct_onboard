@@ -54,8 +54,8 @@ class RealNode(Node):
         joint_pos_protect_ratio: float = 1.5,  # if the joint_pos is out of the range of this ratio, the process will shutdown.
         kp_factor: float = 1.0,  # the factor to multiply the p_gain and clip the value to be in [0, 500]
         kd_factor: float = 1.0,  # the factor to multiply the d_gain
-        kp_clip: float = 500, # the maximum limit to the kp factor to prevent rediculious behavior.
-        kd_clip: float = 20, # the maximum limit to the kd factor to prevent rediculious behavior.
+        kp_clip: float = 500,  # the maximum limit to the kp factor to prevent rediculious behavior.
+        kd_clip: float = 20,  # the maximum limit to the kd factor to prevent rediculious behavior.
         torque_limits_ratio: float = 1.0,  # the factor to multiply the torque limits
         robot_class_name: str = None,  # the robot class name, used to get the robot configuration
         dryrun: bool = True,  # if True, the robot will not send commands to the real robot
