@@ -12,6 +12,7 @@ from instinct_onboard.agents.base import ColdStartAgent
 from instinct_onboard.agents.parkour_agent import (
     ParkourAgent,
     ParkourStandAgent,
+    ParkourWalkRunAgent,
 )
 from instinct_onboard.ros_nodes.realsense import UnitreeRsCameraNode
 
@@ -28,6 +29,7 @@ Features:
     - Depth perception using RealSense D435 camera
     - ParkourAgent for autonomous parkour behaviors
     - ParkourStandAgent for standing and balancing
+    - ParkourWalkRunAgent for proprioception-only walk/run locomotion
     - Velocity control via joystick/wireless controller
     - Real-time obstacle avoidance and navigation
 
@@ -39,6 +41,8 @@ Command-Line Arguments:
                               (must contain exported/actor.onnx)
 
     Optional:
+        --walkrundir PATH      Directory containing the proprio-only walkrun model
+                              (must contain exported/actor.onnx)
         --startup_step_size FLOAT
                               Startup step size for cold start agent (default: 0.2)
         --nodryrun            Disable dry run mode (default: False, runs in dry run mode)
@@ -57,23 +61,31 @@ Agent Workflow:
     1. Cold Start Agent (initial state)
        - Automatically starts when node launches
        - Transitions robot to initial pose
-       - Press 'R1' to switch to stand agent (if available)
-       - Press any direction button to switch to parkour agent
+       - Press 'R1' to switch to stand agent
+       - Press 'R2' to switch to walkrun agent (if available)
 
     2. Stand Agent (requires --standdir)
        - Activated by pressing 'R1' after cold start completes
        - Provides standing and balancing behavior
        - Press 'L1' to switch to parkour agent
+       - Press 'R2' to switch to walkrun agent (if available)
 
     3. Parkour Agent
        - Executes autonomous parkour behaviors with depth perception
        - Responds to velocity commands from joystick/wireless controller
        - Press 'R1' to switch back to stand agent
+       - Press 'R2' to switch to walkrun agent (if available)
+
+    4. WalkRun Agent (optional, requires --walkrundir)
+       - Executes proprioception-only locomotion with no depth encoder input
+       - Responds to velocity commands from joystick/wireless controller
+       - Press 'R1' to switch back to stand agent
 
 Joystick Controls:
-    R1 Button:   Switch to stand agent (from cold start or parkour)
+    R1 Button:   Switch to stand agent (from cold start, parkour, or walkrun)
     L1 Button:   Switch to parkour agent (from stand)
-    Direction Buttons: Switch to parkour agent (from cold start)
+    R2 Button:   Switch to walkrun agent (from cold start, stand, or parkour)
+    L2 Button:   Emergency stop and exit the process
 
 Velocity Control (Wireless Controller):
     Linear velocity is controlled based on forward/backward input with deadband
@@ -85,6 +97,12 @@ Example Usage:
         python g1_parkour.py \\
             --logdir /path/to/parkour/model \\
             --standdir /path/to/stand/model
+
+    With optional walkrun mode:
+        python g1_parkour.py \\
+            --logdir /path/to/parkour/model \\
+            --standdir /path/to/stand/model \\
+            --walkrundir /path/to/walkrun/model
 
     With visualization options:
         python g1_parkour.py \\
@@ -133,6 +151,14 @@ class G1ParkourNode(UnitreeRsCameraNode):
     def register_agent(self, name: str, agent):
         self.available_agents[name] = agent
 
+    def _switch_to_agent(self, name: str, log_message: str):
+        if name not in self.available_agents:
+            self.get_logger().warn(f"Requested agent '{name}' is not registered.")
+            return
+        self.get_logger().info(log_message)
+        self.current_agent_name = name
+        self.available_agents[self.current_agent_name].reset()
+
     def start_ros_handlers(self):
         super().start_ros_handlers()
         # build the joint state publisher and base_link tf publisher
@@ -158,13 +184,18 @@ class G1ParkourNode(UnitreeRsCameraNode):
         elif self.current_agent_name == "cold_start":
             action, done = self.available_agents[self.current_agent_name].step()
             if done:
-                if "stand" in self.available_agents.keys():
+                if "walkrun" in self.available_agents.keys():
+                    self.get_logger().info(
+                        "ColdStartAgent done, press 'R1' for stand or 'R2' for walkrun.",
+                        throttle_duration_sec=10.0,
+                    )
+                elif "stand" in self.available_agents.keys():
                     self.get_logger().info(
                         "ColdStartAgent done, press 'R1' to switch to stand agent.", throttle_duration_sec=10.0
                     )
                 else:
                     self.get_logger().info(
-                        "ColdStartAgent done, press any direction button to switch to parkour agent.",
+                        "ColdStartAgent done, waiting for a registered transition command.",
                         throttle_duration_sec=10.0,
                     )
             self.send_action(
@@ -174,10 +205,10 @@ class G1ParkourNode(UnitreeRsCameraNode):
                 self.available_agents[self.current_agent_name].p_gains,
                 self.available_agents[self.current_agent_name].d_gains,
             )
-            if done and (self.joy_stick_data.R1):
-                self.get_logger().info("R1 button pressed, switching to stand agent.")
-                self.current_agent_name = "stand"
-                self.available_agents[self.current_agent_name].reset()
+            if done and self.joy_stick_data.R1:
+                self._switch_to_agent("stand", "R1 button pressed, switching to stand agent.")
+            elif done and self.joy_stick_data.R2:
+                self._switch_to_agent("walkrun", "R2 button pressed, switching to walkrun agent.")
 
         elif self.current_agent_name == "stand":
             action, done = self.available_agents[self.current_agent_name].step()
@@ -190,9 +221,9 @@ class G1ParkourNode(UnitreeRsCameraNode):
                 self.available_agents[self.current_agent_name].d_gains,
             )
             if self.joy_stick_data.L1:
-                self.get_logger().info("L1 button pressed, switching to parkour agent.")
-                self.current_agent_name = "parkour"
-                self.available_agents[self.current_agent_name].reset()
+                self._switch_to_agent("parkour", "L1 button pressed, switching to parkour agent.")
+            elif self.joy_stick_data.R2:
+                self._switch_to_agent("walkrun", "R2 button pressed, switching to walkrun agent.")
 
         elif self.current_agent_name == "parkour":
             action, done = self.available_agents[self.current_agent_name].step()
@@ -204,9 +235,21 @@ class G1ParkourNode(UnitreeRsCameraNode):
                 self.available_agents[self.current_agent_name].d_gains,
             )
             if self.joy_stick_data.R1:
-                self.get_logger().info("R1 button pressed, switching to stand agent.")
-                self.current_agent_name = "stand"
-                self.available_agents[self.current_agent_name].reset()
+                self._switch_to_agent("stand", "R1 button pressed, switching to stand agent.")
+            elif self.joy_stick_data.R2:
+                self._switch_to_agent("walkrun", "R2 button pressed, switching to walkrun agent.")
+
+        elif self.current_agent_name == "walkrun":
+            action, done = self.available_agents[self.current_agent_name].step()
+            self.send_action(
+                action,
+                self.available_agents[self.current_agent_name].action_offset,
+                self.available_agents[self.current_agent_name].action_scale,
+                self.available_agents[self.current_agent_name].p_gains,
+                self.available_agents[self.current_agent_name].d_gains,
+            )
+            if self.joy_stick_data.R1:
+                self._switch_to_agent("stand", "R1 button pressed, switching to stand agent.")
 
         # count the main loop timer counter and log the actual frequency every 500 counts
         if MAIN_LOOP_FREQUENCY_CHECK_INTERVAL > 1:
@@ -233,6 +276,7 @@ def main(args):
         joint_pos_protect_ratio=2.0,
         robot_class_name="G1_29Dof_TorsoBase",
         dryrun=not args.nodryrun,
+        estop_on_r2=False,
     )
 
     stand_agent = ParkourStandAgent(
@@ -252,6 +296,17 @@ def main(args):
         ang_vel_range=args.ang_vel_range,
     )
     node.register_agent("parkour", parkour_agent)
+
+    if args.walkrundir is not None:
+        walkrun_agent = ParkourWalkRunAgent(
+            logdir=args.walkrundir,
+            ros_node=node,
+            lin_vel_deadband=args.lin_vel_deadband,
+            lin_vel_range=args.lin_vel_range,
+            ang_vel_deadband=args.ang_vel_deadband,
+            ang_vel_range=args.ang_vel_range,
+        )
+        node.register_agent("walkrun", walkrun_agent)
 
     cold_start_agent = ColdStartAgent(
         startup_step_size=args.startup_step_size,
@@ -298,6 +353,12 @@ if __name__ == "__main__":
         type=float,
         default=0.2,
         help="Startup step size for the cold start agent (default: 0.2)",
+    )
+    parser.add_argument(
+        "--walkrundir",
+        type=str,
+        default=None,
+        help="Directory to load the walkrun agent from",
     )
     parser.add_argument(
         "--kpkd_factor",

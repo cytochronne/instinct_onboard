@@ -18,6 +18,7 @@ class UnitreeNode(RealNode):
         low_cmd_topic: str = "/lowcmd",
         imu_state_topic: str = "/secondary_imu",
         joy_stick_topic: str = "/wirelesscontroller",
+        estop_on_r2: bool = True,
         **kwargs,
     ):
         super().__init__(node_name="unitree_node", **kwargs)
@@ -28,6 +29,7 @@ class UnitreeNode(RealNode):
             low_cmd_topic if not self.dryrun else low_cmd_topic + "_dryrun_" + str(np.random.randint(0, 65535))
         )
         self.joy_stick_topic = joy_stick_topic
+        self.estop_on_r2 = estop_on_r2
 
     def parse_config(self):
         super().parse_config()
@@ -147,10 +149,17 @@ class UnitreeNode(RealNode):
         # 00000000 00000001 means pressing the 0-th button (R1)
         # 00000000 00000010 means pressing the 1-th button (L1)
         # 10000000 00000000 means pressing the 15-th button (left)
-        if (msg.keys & robot_cfgs.UnitreeWirelessButtons.R2) or (
-            msg.keys & robot_cfgs.UnitreeWirelessButtons.L2
-        ):  # R2 or L2 is pressed
-            self.get_logger().warn("R2 or L2 is pressed, the motors and this process shuts down.")
+        r2_pressed = bool(msg.keys & robot_cfgs.UnitreeWirelessButtons.R2)
+        l2_pressed = bool(msg.keys & robot_cfgs.UnitreeWirelessButtons.L2)
+        if (self.estop_on_r2 and r2_pressed) or l2_pressed:
+            pressed_buttons = []
+            if self.estop_on_r2 and r2_pressed:
+                pressed_buttons.append("R2")
+            if l2_pressed:
+                pressed_buttons.append("L2")
+            self.get_logger().warn(
+                f"{' and '.join(pressed_buttons)} is pressed, the motors and this process shuts down."
+            )
             self._turn_off_motors()
             raise SystemExit()
 

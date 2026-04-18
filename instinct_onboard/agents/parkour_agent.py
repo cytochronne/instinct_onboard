@@ -172,16 +172,25 @@ class ParkourAgent(OnboardAgent):
 
     def reset(self):
         """Reset the agent state and the rosbag reader."""
-        pass
+        OnboardAgent.reset(self)
 
-    def step(self):
-        """Perform a single step of the agent."""
-        # pack actor MLP input
+    def _get_proprio_obs(self) -> np.ndarray:
         proprio_obs = []
         for proprio_obs_name in self.proprio_obs_names:
             obs_term_value = self._get_single_obs_term(proprio_obs_name)
             proprio_obs.append(np.reshape(obs_term_value, (1, -1)).astype(np.float32))
-        proprio_obs = np.concatenate(proprio_obs, axis=-1)
+        return np.concatenate(proprio_obs, axis=-1)
+
+    def _reconstruct_full_action(self, action: np.ndarray) -> np.ndarray:
+        mask = (self._zero_action_joints == 0).astype(bool)
+        full_action = np.zeros(self.ros_node.NUM_ACTIONS, dtype=np.float32)
+        full_action[mask] = action.reshape(-1)
+        return full_action
+
+    def step(self):
+        """Perform a single step of the agent."""
+        # pack actor MLP input
+        proprio_obs = self._get_proprio_obs()
 
         depth_obs = (
             self._get_single_obs_term(self.depth_obs_names[0])
@@ -215,11 +224,7 @@ class ParkourAgent(OnboardAgent):
         actor_input = np.concatenate([proprio_obs, depth_image_output], axis=1)
         actor_input_name = self.ort_sessions["actor"].get_inputs()[0].name
         action = self.ort_sessions["actor"].run(None, {actor_input_name: actor_input})[0]
-        action = action.reshape(-1)
-        # reconstruct full action including zeroed joints
-        mask = (self._zero_action_joints == 0).astype(bool)
-        full_action = np.zeros(self.ros_node.NUM_ACTIONS, dtype=np.float32)
-        full_action[mask] = action
+        full_action = self._reconstruct_full_action(action)
 
         return full_action, False
 
@@ -334,3 +339,57 @@ class ParkourStandAgent(ParkourAgent):
 
     def _get_depth_image_downsample_obs(self):
         return np.zeros([len(self.depth_obs_indices), self.depth_height, self.depth_width])
+
+
+class ParkourWalkRunAgent(ParkourAgent):
+    def __init__(
+        self,
+        logdir: str,
+        ros_node: RealNode,
+        lin_vel_deadband=0.5,
+        lin_vel_range=[0.5, 0.5],
+        ang_vel_deadband=0.15,
+        ang_vel_range=[0.0, 1.0],
+    ):
+        super().__init__(
+            logdir=logdir,
+            ros_node=ros_node,
+            depth_vis=False,
+            pointcloud_vis=False,
+            lin_vel_deadband=lin_vel_deadband,
+            lin_vel_range=lin_vel_range,
+            ang_vel_deadband=ang_vel_deadband,
+            ang_vel_range=ang_vel_range,
+        )
+
+    def _parse_obs_config(self):
+        OnboardAgent._parse_obs_config(self)
+        with open(os.path.join(self.logdir, "params", "agent.yaml")) as f:
+            self.agent_cfg = yaml.unsafe_load(f)
+        all_obs_names = list(self.obs_funcs.keys())
+        self.proprio_obs_names = all_obs_names
+        self.depth_obs_names = [obs_name for obs_name in all_obs_names if "depth" in obs_name]
+        assert len(self.depth_obs_names) == 0, "WalkRun agent must use proprioception-only observations."
+        print(f"ParkourWalkRunAgent proprioception names: {self.proprio_obs_names}")
+        table = prettytable.PrettyTable()
+        table.field_names = ["Observation Name", "Function"]
+        for obs_name, func in self.obs_funcs.items():
+            table.add_row([obs_name, func.__name__])
+        print("Observation functions:")
+        print(table)
+
+    def _load_models(self):
+        ort_execution_providers = ort.get_available_providers()
+        actor_path = os.path.join(self.logdir, "exported", "actor.onnx")
+        self.ort_sessions["actor"] = ort.InferenceSession(actor_path, providers=ort_execution_providers)
+        print(f"Loaded ONNX models from {self.logdir}")
+
+    def reset(self):
+        OnboardAgent.reset(self)
+
+    def step(self):
+        proprio_obs = self._get_proprio_obs()
+        actor_input_name = self.ort_sessions["actor"].get_inputs()[0].name
+        action = self.ort_sessions["actor"].run(None, {actor_input_name: proprio_obs})[0]
+        full_action = self._reconstruct_full_action(action)
+        return full_action, False
